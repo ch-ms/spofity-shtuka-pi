@@ -1,0 +1,22 @@
+{
+  "name": "spotify-shtuka-pi",
+  "version": "0.1.0",
+  "description": "Pi package providing a Spotify control tool powered by spotify_player.",
+  "license": "Unlicense",
+  "author": "Evgeniy Kuznetsov",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ch-ms/spotify-shtuka-pi.git"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  }
+}
