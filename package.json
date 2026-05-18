@@ -1,6 +1,6 @@
 {
   "name": "spotify-shtuka-pi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pi package providing a Spotify control tool powered by spotify_player.",
   "license": "Unlicense",
   "author": "Evgeniy Kuznetsov",
