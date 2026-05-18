@@ -61,7 +61,9 @@ const SpotifyParams = Type.Object({
 	public: Type.Optional(Type.Boolean({ description: "For playlist_new: make playlist public" })),
 	description: Type.Optional(Type.String({ description: "For playlist_new: optional description" })),
 	playlist_id: Type.Optional(Type.String({ description: "For playlist_add/playlist_remove/playlist_delete: target playlist ID" })),
-	track_id: Type.Optional(Type.String({ description: "For playlist_add/playlist_remove: track ID to add or remove" })),
+	track_ids: Type.Optional(Type.Array(Type.String(), {
+		description: "For playlist_add/playlist_remove: track IDs to add or remove sequentially, preserving order. Use a one-item array for a single track.",
+	})),
 });
 
 type SpotifyAction =
@@ -91,7 +93,8 @@ type SpotifyAction =
 
 interface SpotifyDetails {
 	action: SpotifyAction;
-	command: string[];
+	commands: string[][];
+	trackCount?: number;
 	truncation?: TruncationResult;
 }
 
@@ -106,6 +109,16 @@ async function runSpotify(
 ): Promise<{ stdout: string; stderr: string; code: number; killed: boolean }> {
 	const result = await pi.exec("spotify_player", args, { signal, timeout: 60000, cwd: ctx.cwd });
 	return result;
+}
+
+function cleanSpotifyId(value: string | undefined, kind?: "playlist" | "track" | "album" | "artist"): string | undefined {
+	if (!value) return undefined;
+
+	if (kind) {
+		return value.replace(new RegExp(`^spotify:${kind}:`), "");
+	}
+
+	return value.replace(/^spotify:(playlist|track|album|artist):/, "");
 }
 
 function truncateOutput(output: string): { text: string; truncation?: TruncationResult } {
@@ -137,7 +150,7 @@ export default function(pi: ExtensionAPI) {
 			"Control Spotify via the spotify_player CLI. " +
 			"Actions: search, play_track, play_context (playlist/album/artist), playback controls (play_pause/pause/play/next/previous/volume/seek/shuffle/repeat), " +
 			"get info (playback/queue/playlists/devices), like current track, connect device, " +
-			"and manage playlists (playlist_new/playlist_list/playlist_add/playlist_remove/playlist_delete). " +
+			"and manage playlists (playlist_new/playlist_list/playlist_add/playlist_remove/playlist_delete, including batch add/remove with track_ids). " +
 			`Output is truncated to ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}. ` +
 			"Use play_track or play_context with either a name/query or an id.",
 		promptSnippet: "Control Spotify playback, search, and get playback data via spotify_player CLI",
@@ -148,19 +161,32 @@ export default function(pi: ExtensionAPI) {
 			"For volume, provide value as a percentage between 0 and 100.",
 			"For seek, provide value as offset in milliseconds (positive or negative).",
 			"For playlist_new, provide query as the playlist name and optionally description and public.",
-			"For playlist_add/playlist_remove/playlist_delete, playlist_id and track_id accept both bare IDs and full Spotify URIs — the tool strips prefixes automatically.",
+			"For playlist_add/playlist_remove, provide playlist_id and track_ids; use a one-item track_ids array for a single track. track_ids are processed sequentially in the provided order.",
+			"For playlist_add/playlist_remove/playlist_delete, playlist_id and track_ids accept both bare IDs and full Spotify URIs — the tool strips prefixes automatically.",
 			"For search, the result is parsed into a clean track summary with IDs, making it easy to pick tracks for playlist_add.",
 			"For playlist_list, no additional arguments are needed.",
 		],
 		parameters: SpotifyParams,
 
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const { action, query, id, context_type, value, shuffle, public: isPublic, description, playlist_id, track_id } = params;
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			const {
+				action,
+				query,
+				id,
+				context_type,
+				value,
+				shuffle,
+				public: isPublic,
+				description,
+				playlist_id,
+				track_ids,
+			} = params;
 
-			// Normalize IDs: strip spotify:playlist: and spotify:track: prefixes automatically
-			const cleanPlaylistId = playlist_id?.replace(/^spotify:playlist:/, "");
-			const cleanTrackId = track_id?.replace(/^spotify:track:/, "");
-			const cleanId = id?.replace(/^spotify:(playlist|track|album|artist):/, "");
+			// Normalize IDs: strip spotify:*: prefixes automatically
+			const cleanPlaylistId = cleanSpotifyId(playlist_id, "playlist");
+			const cleanId = cleanSpotifyId(id);
+			const cleanTrackIds = (Array.isArray(track_ids) ? track_ids : [])
+				.map((trackId) => cleanSpotifyId(trackId, "track")!);
 
 			const args: string[] = [];
 
@@ -278,14 +304,12 @@ export default function(pi: ExtensionAPI) {
 				}
 				case "playlist_add": {
 					if (!cleanPlaylistId) throw new Error("playlist_add requires playlist_id");
-					if (!cleanTrackId) throw new Error("playlist_add requires track_id");
-					args.push("playlist", "edit", "--track-id", cleanTrackId, "add", cleanPlaylistId);
+					if (cleanTrackIds.length === 0) throw new Error("playlist_add requires track_ids");
 					break;
 				}
 				case "playlist_remove": {
 					if (!cleanPlaylistId) throw new Error("playlist_remove requires playlist_id");
-					if (!cleanTrackId) throw new Error("playlist_remove requires track_id");
-					args.push("playlist", "edit", "--track-id", cleanTrackId, "delete", cleanPlaylistId);
+					if (cleanTrackIds.length === 0) throw new Error("playlist_remove requires track_ids");
 					break;
 				}
 				case "playlist_delete": {
@@ -300,20 +324,52 @@ export default function(pi: ExtensionAPI) {
 				}
 			}
 
-			const result = await runSpotify(pi, args, signal, ctx);
+			let commandsDetails: string[][] = [args];
+			let output: string;
 
-			// spotify_player sometimes exits non-zero for benign reasons (e.g. no active device)
-			// We'll surface stderr if present and treat non-zero as an error only when stdout is empty.
-			let rawOutput = result.stdout;
-			if (result.stderr.trim()) {
-				rawOutput += (rawOutput ? "\n" : "") + result.stderr.trim();
+			if (action === "playlist_add" || action === "playlist_remove") {
+				const editAction = action === "playlist_add" ? "add" : "delete";
+				const verb = action === "playlist_add" ? "Added" : "Removed";
+				const gerund = action === "playlist_add" ? "Adding" : "Removing";
+				const commands = cleanTrackIds.map((trackId) => ["playlist", "edit", "--track-id", trackId, editAction, cleanPlaylistId!]);
+				const failures: string[] = [];
+
+				commandsDetails = commands;
+
+				for (let i = 0; i < commands.length; i++) {
+					onUpdate?.({
+						content: [{ type: "text", text: `${gerund} track ${i + 1}/${commands.length}...` }],
+					});
+
+					const result = await runSpotify(pi, commands[i], signal, ctx);
+					const rawOutput = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n");
+
+					if (result.code !== 0) {
+						failures.push(`${cleanTrackIds[i]}: ${rawOutput || `spotify_player failed with exit ${result.code}`}`);
+					}
+				}
+
+				const succeeded = cleanTrackIds.length - failures.length;
+				output = `${verb} ${succeeded}/${cleanTrackIds.length} track${cleanTrackIds.length !== 1 ? "s" : ""} ${action === "playlist_add" ? "to" : "from"} playlist ${cleanPlaylistId}.`;
+				if (failures.length > 0) {
+					output += `\n\nFailures:\n${failures.map((failure) => `- ${failure}`).join("\n")}`;
+				}
+			} else {
+				const result = await runSpotify(pi, args, signal, ctx);
+
+				// spotify_player sometimes exits non-zero for benign reasons (e.g. no active device)
+				// We'll surface stderr if present and treat non-zero as an error only when stdout is empty.
+				let rawOutput = result.stdout;
+				if (result.stderr.trim()) {
+					rawOutput += (rawOutput ? "\n" : "") + result.stderr.trim();
+				}
+
+				if (result.code !== 0 && !rawOutput.trim()) {
+					throw new Error(`spotify_player failed (exit ${result.code}): ${result.stderr || "unknown error"}`);
+				}
+
+				output = rawOutput.trim() || "(no output)";
 			}
-
-			if (result.code !== 0 && !rawOutput.trim()) {
-				throw new Error(`spotify_player failed (exit ${result.code}): ${result.stderr || "unknown error"}`);
-			}
-
-			let output = rawOutput.trim() || "(no output)";
 
 			// --- Smart search result parsing --------------------------------
 			if (action === "search") {
@@ -345,7 +401,8 @@ export default function(pi: ExtensionAPI) {
 				content: [{ type: "text", text }],
 				details: {
 					action,
-					command: args,
+					commands: commandsDetails,
+					trackCount: (action === "playlist_add" || action === "playlist_remove") ? cleanTrackIds.length : undefined,
 					truncation,
 				} as SpotifyDetails,
 			};
@@ -369,8 +426,8 @@ export default function(pi: ExtensionAPI) {
 			if (args.playlist_id) {
 				text += ` ${theme.fg("dim", `playlist=${args.playlist_id}`)}`;
 			}
-			if (args.track_id) {
-				text += ` ${theme.fg("dim", `track=${args.track_id}`)}`;
+			if (Array.isArray(args.track_ids)) {
+				text += ` ${theme.fg("dim", `tracks=${args.track_ids.length}`)}`;
 			}
 			return new Text(text, 0, 0);
 		},

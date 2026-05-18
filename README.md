@@ -42,7 +42,7 @@ After installation, ask Pi to control Spotify in natural language:
 - "Create a playlist called Road Trip"
 - "Search for Daft Punk tracks"
 
-Pi will call the registered `spotify_player` tool with the appropriate action.
+Pi will call the registered `spotify_player` tool with the appropriate action. For playlist edits, it can pass `track_ids` to add/remove multiple tracks in one tool call while preserving order.
 
 ## Available Actions
 
@@ -51,4 +51,5 @@ Pi will call the registered `spotify_player` tool with the appropriate action.
 - Social: `like`
 - Devices: `connect`
 - Playlists: `playlist_new`, `playlist_list`, `playlist_add`, `playlist_remove`, `playlist_delete`
+  - `playlist_add` / `playlist_remove` use `track_ids` for all track edits. Use a one-item array for a single track.
 
