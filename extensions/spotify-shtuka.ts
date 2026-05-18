@@ -305,13 +305,11 @@ export default function(pi: ExtensionAPI) {
 				case "playlist_add": {
 					if (!cleanPlaylistId) throw new Error("playlist_add requires playlist_id");
 					if (cleanTrackIds.length === 0) throw new Error("playlist_add requires track_ids");
-					args.push("playlist", "edit", "--track-id", cleanTrackIds[0], "add", cleanPlaylistId);
 					break;
 				}
 				case "playlist_remove": {
 					if (!cleanPlaylistId) throw new Error("playlist_remove requires playlist_id");
 					if (cleanTrackIds.length === 0) throw new Error("playlist_remove requires track_ids");
-					args.push("playlist", "edit", "--track-id", cleanTrackIds[0], "delete", cleanPlaylistId);
 					break;
 				}
 				case "playlist_delete": {
@@ -329,7 +327,7 @@ export default function(pi: ExtensionAPI) {
 			let commandsDetails: string[][] = [args];
 			let output: string;
 
-			if ((action === "playlist_add" || action === "playlist_remove") && cleanTrackIds.length > 1) {
+			if (action === "playlist_add" || action === "playlist_remove") {
 				const editAction = action === "playlist_add" ? "add" : "delete";
 				const verb = action === "playlist_add" ? "Added" : "Removed";
 				const gerund = action === "playlist_add" ? "Adding" : "Removing";
@@ -352,7 +350,7 @@ export default function(pi: ExtensionAPI) {
 				}
 
 				const succeeded = cleanTrackIds.length - failures.length;
-				output = `${verb} ${succeeded}/${cleanTrackIds.length} tracks ${action === "playlist_add" ? "to" : "from"} playlist ${cleanPlaylistId}.`;
+				output = `${verb} ${succeeded}/${cleanTrackIds.length} track${cleanTrackIds.length !== 1 ? "s" : ""} ${action === "playlist_add" ? "to" : "from"} playlist ${cleanPlaylistId}.`;
 				if (failures.length > 0) {
 					output += `\n\nFailures:\n${failures.map((failure) => `- ${failure}`).join("\n")}`;
 				}
